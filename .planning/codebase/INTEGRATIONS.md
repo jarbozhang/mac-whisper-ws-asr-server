@@ -1,124 +1,183 @@
-# External Integrations
+# 外部集成
 
-**Analysis Date:** 2026-02-02
+**分析日期:** 2026-02-02
 
-## APIs & External Services
+## ASR 引擎
 
-**Whisper ASR Engine:**
-- whisper.cpp - Local speech-to-text binary executed via CLI
-  - SDK/Client: Direct process spawning (`node:child_process`)
-  - Integration: `src/whisper.js` - `runWhisper()` spawns `whisper.cpp/main` process
-  - Auth: None - Local binary
-  - Config env vars: `WHISPER_BIN`, `WHISPER_MODEL`, `WHISPER_ARGS`
-  - Parameters: Audio file path, model path, output format flags
-  - Output: Text transcription written to `.txt` file
+**whisper.cpp:**
+- 类型: 本地 CLI 二进制文件
+- 集成方式: 通过 `child_process.spawn()` 调用
+- 配置: `WHISPER_BIN` (二进制路径), `WHISPER_MODEL` (模型路径), `WHISPER_ARGS` (额外参数)
+- 输入: 临时 WAV 文件
+- 输出: 文本文件 (与 WAV 同名,扩展名 `.txt`)
+- 错误处理: 通过 stderr 捕获,非零退出码触发拒绝
+- 文档: `src/whisper.js`
+- 示例调用:
+  ```javascript
+  const { text, ms, outTxt } = await runWhisper({
+    whisperBin: config.whisperBin,
+    modelPath: config.whisperModel,
+    wavPath: '/tmp/uuid.wav',
+    extraArgs: ['--language', 'zh', '--temperature', '0']
+  });
+  ```
 
-## Data Storage
+## 客户端通信
 
-**Databases:**
-- None - No persistent database integration
+**WebSocket 服务器:**
+- 协议: WebSocket (ws://)
+- 端点: `ws://<host>:<port>/ws`
+- 端口: 默认 8765 (可通过 `PORT` 环境变量配置)
+- 消息格式:
+  - 控制消息: JSON 文本帧
+  - 音频数据: 二进制帧 (原始 PCM)
+- 消息类型:
+  - 客户端发送: `start`, `end`, `cancel`, 二进制音频块
+  - 服务器发送: `ack`, `result`, `error`, `progress`
+- 认证: 基于令牌 (在 `start` 消息中的 `token` 字段)
+- 文档: `src/server.js`
 
-**File Storage:**
-- Local filesystem only
-  - Temporary WAV files: Stored in OS temp directory (`os.tmpdir()`)
-  - Naming: `asr-{reqId}.wav` and corresponding `.txt` output
-  - Cleanup: Automatic deletion after transcription (unless `KEEP_DEBUG=true`)
-  - Implementation: `src/server.js` (lines 92-94 for write, lines 110-112 for cleanup)
+**示例消息协议:**
+```javascript
+// 客户端 -> 服务器: 开始会话
+{
+  type: 'start',
+  token: 'AUTH_TOKEN',
+  reqId: 'uuid-v4',
+  mode: 'return_only' | 'paste' | 'paste_enter',
+  format: 'pcm_s16le',
+  sampleRate: 16000,
+  channels: 1,
+  bitDepth: 16
+}
 
-**Caching:**
-- None - No caching layer
+// 服务器 -> 客户端: 确认
+{ type: 'ack', reqId: 'uuid-v4', status: 'ready' }
 
-## Authentication & Identity
+// 客户端 -> 服务器: 音频数据 (二进制帧)
+<PCM 数据 Buffer>
 
-**Auth Provider:**
-- Custom token-based
-  - Implementation: Simple shared secret token in `AUTH_TOKEN` env var
-  - Enforcement: `src/server.js` line 45 - Token validation on `start` message
-  - Failure: WebSocket closure with `unauthorized` error message
-  - Token format: Plain string (no JWT or cryptographic validation)
+// 服务器 -> 客户端: 进度 (可选,每 ~256KB)
+{ type: 'progress', reqId: 'uuid-v4', bytes: 262144 }
 
-## Monitoring & Observability
+// 客户端 -> 服务器: 结束会话
+{ type: 'end', reqId: 'uuid-v4' }
 
-**Error Tracking:**
-- None - No error tracking service integration
+// 服务器 -> 客户端: 识别结果
+{
+  type: 'result',
+  reqId: 'uuid-v4',
+  text: '识别的文本',
+  ms: 1234,
+  engine: 'whisper.cpp'
+}
 
-**Logs:**
-- Console logging only
-  - `src/server.js` line 158: Connection logs via `console.log()`
-  - `src/server.js` line 162: Server startup message
-  - Error details: Sent to client as JSON error messages, not persisted
+// 服务器 -> 客户端: 错误
+{ type: 'error', reqId: 'uuid-v4', message: '错误描述' }
+```
 
-**Health Endpoint:**
-- `GET /health` - Simple HTTP health check
-  - Returns JSON with `ok`, `engine`, `uptimeSec`, `version` fields
-  - Location: `src/server.js` lines 20-24
+## 身份验证
 
-## CI/CD & Deployment
+**机制:**
+- 单一共享令牌 (通过 `AUTH_TOKEN` 环境变量)
+- 在 `start` 消息中验证
+- 验证失败: 发送 `error` 消息,关闭连接
+- 无会话管理或每用户令牌
+- 无令牌刷新或过期
 
-**Hosting:**
-- No integration - Standalone Node.js server
-- Deployment: Manual or custom tooling (not specified in repo)
-- Execution: `npm run dev` or `npm start` via `node src/server.js`
+**安全考虑:**
+- 令牌以明文通过 WebSocket 发送
+- 建议在生产环境使用 WSS (WebSocket Secure/TLS)
+- 无速率限制或暴力破解保护
 
-**CI Pipeline:**
-- None - No CI/CD configuration detected
+## 文件存储
 
-## Environment Configuration
+**临时文件:**
+- 位置: `os.tmpdir()` (macOS 上通常是 `/tmp`)
+- 文件类型:
+  - WAV 文件: `${uuid}.wav` (PCM 转换为 WAV)
+  - 文本文件: `${uuid}.txt` (whisper.cpp 输出)
+- 生命周期:
+  - 创建: 在 `end` 消息处理期间
+  - 删除: 处理后立即 (如果 `KEEP_DEBUG=false`)
+  - 保留: 如果 `KEEP_DEBUG=true` 用于调试
+- 清理: `safeUnlink()` 函数 (静默忽略错误)
 
-**Required env vars:**
-- `WHISPER_BIN` - Path to compiled whisper.cpp binary
-- `WHISPER_MODEL` - Path to GGML model file
-- `AUTH_TOKEN` - Shared authentication token
+## macOS 系统集成
 
-**Optional env vars with defaults:**
-- `HOST` (default: `0.0.0.0`)
-- `PORT` (default: `8765`)
-- `WHISPER_ARGS` (default: empty, passed as CLI args to whisper.cpp)
-- `DEFAULT_MODE` (default: `return_only`)
-- `MAX_AUDIO_SEC` (default: `30`)
-- `SAMPLE_RATE` (default: `16000`)
-- `CHANNELS` (default: `1`)
-- `BIT_DEPTH` (default: `16`)
-- `KEEP_DEBUG` (default: `false`)
+**剪贴板访问 (pbcopy):**
+- 命令: `/usr/bin/pbcopy`
+- 用途: 将识别文本复制到系统剪贴板
+- 使用场景: `mode` 为 `paste` 或 `paste_enter` 时
+- 错误处理: Promise 拒绝,错误码非零
+- 文档: `src/inject.js:3-10`
 
-**Secrets location:**
-- `.env` file (example provided as `.env.example`)
-- Auth token stored in `AUTH_TOKEN` variable
-- `.gitignore` prevents `.env` from being committed
+**键盘自动化 (osascript):**
+- 命令: `/usr/bin/osascript -e 'tell application "System Events" to keystroke "v" using command down'`
+- 用途: 模拟 Cmd+V 粘贴操作
+- 扩展: 可选择添加 `keystroke return` (如果 `mode === 'paste_enter'`)
+- 权限: 需要辅助功能权限
+- 错误处理: Promise 拒绝,错误码非零
+- 文档: `src/inject.js:12-21`
 
-## Webhooks & Callbacks
+## 数据库
 
-**Incoming:**
-- WebSocket messages only
-  - Control frames: JSON `start`, `end`, `cancel` messages
-  - Audio frames: Binary PCM s16le audio chunks
-  - Protocol documented in `SPEC.md` and implemented in `src/server.js`
+**无数据库集成:**
+- 所有数据都是临时的 (内存中的会话状态,临时文件)
+- 无持久化存储
+- 无用户数据库或会话存储
 
-**Outgoing:**
-- None - No outbound webhooks or callbacks
-- Results returned directly to WebSocket client via JSON messages: `ack`, `result`, `error`, `progress`
+## 缓存
 
-## System-Level Integrations
+**无缓存层:**
+- 每个音频请求都进行新的转录
+- 无结果缓存或去重
+- 无 Redis 或内存缓存
 
-**macOS System Clipboard:**
-- Tool: `pbcopy` command
-- Integration: `src/inject.js` line 3-11 - `pbcopy()` function
-- Purpose: Copy transcribed text to system clipboard
-- Used in: `paste` and `paste_enter` modes
+## 日志记录
 
-**macOS Keystroke Injection:**
-- Tool: `osascript` (AppleScript runner)
-- Integration: `src/inject.js` line 13-21 - `osascript()` function
-- Operations:
-  - Cmd+V paste: `keystroke "v" using command down`
-  - Enter key: `key code 36`
-- Purpose: Inject transcribed text into foreground application
-- Used in: `paste` and `paste_enter` modes
+**控制台输出:**
+- 机制: `console.log()` 和 `console.error()`
+- 内容:
+  - 服务器启动: 主机、端口、路径
+  - 连接事件: 客户端连接、远程地址
+  - 配置错误: 缺少 AUTH_TOKEN
+- 无结构化日志记录
+- 无日志聚合或外部日志服务
 
-**macOS Accessibility Permission:**
-- Required for clipboard and keystroke operations (noted in README.md line 20)
-- Automatically enforced by macOS when `osascript` is called
+## 监控
+
+**健康检查端点:**
+- 路径: `/health`
+- 方法: HTTP GET
+- 响应:
+  ```json
+  {
+    "status": "ok",
+    "uptime": 12345,
+    "engine": "whisper.cpp"
+  }
+  ```
+- 用途: 负载均衡器健康检查,运行时间监控
+
+**无外部监控:**
+- 无 Prometheus 指标
+- 无 APM 集成
+- 无错误跟踪 (例如 Sentry)
+
+## 第三方 API
+
+**无第三方 API 调用:**
+- 所有处理都在本地完成
+- 无云 ASR 服务 (例如 Google Speech, AWS Transcribe)
+- 无外部 webhook 或回调
+
+## Webhook
+
+**无 webhook 支持:**
+- 无出站 webhook
+- 无入站 webhook 处理
 
 ---
 
-*Integration audit: 2026-02-02*
+*集成分析: 2026-02-02*

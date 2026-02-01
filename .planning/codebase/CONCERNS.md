@@ -1,180 +1,227 @@
-# Codebase Concerns
+# 代码库问题
 
-**Analysis Date:** 2026-02-02
+**分析日期:** 2026-02-02
 
-## Tech Debt
+## 技术债务
 
-**Missing Authentication State Validation:**
-- Issue: Auth token is checked on `start` message but no ongoing validation. A socket authenticated for session A could theoretically be reused if session reference is modified.
-- Files: `src/server.js` (lines 44-49)
-- Impact: Potential session hijacking if client reconnects without re-authenticating
-- Fix approach: Store authenticated state on WebSocket object (`ws.authenticated`) and validate on every message. Require fresh auth for each new session.
+**通过 Promise 链的全局互斥锁串行化:**
+- 问题: `src/server.js` 使用简单的 `whisperQueue` Promise 链进行串行化。虽然功能正常,但此方法缺乏适当的错误恢复、队列可见性和优雅关闭处理。
+- 文件: `src/server.js:32, 119-121`
+- 影响: 如果 whisper 处理灾难性失败,队列可能保持在错误状态。来自多个客户端的并发请求如果任何单个请求挂起,将无限期阻塞。无法监控队列深度或清除卡住的任务。
+- 修复方法: 实现适当的任务队列库 (例如 p-queue) 或基于事件发射器的队列,支持超时、错误隔离和指标。
 
-**Unhandled Promise Rejection in Message Queue:**
-- Issue: The `whisperQueue` chain uses `.catch()` to send error to WebSocket, but this only works for the first client. If multiple clients connect, the error handler refers to a single `ws` variable that may have changed.
-- Files: `src/server.js` (lines 115-117)
-- Impact: Error messages sent to wrong client or lost if connection closes between queued request and error handler execution
-- Fix approach: Capture `ws` reference in closure within the `run` function or use a request-specific error handler instead of global queue.
+**通过 child_process 的文件路径注入,无输入验证:**
+- 问题: `src/whisper.js` 基于客户端提供的音频格式构建文件路径。WAV 文件路径从 `wavPath.replace(/\.wav$/i, '')` 构建,但原始 `wavPath` 派生自 `session.reqId` (UUID)。
+- 文件: `src/whisper.js:6-7`
+- 影响: 由于使用 UUID,风险较低,但模式不验证命令参数。如果 extraArgs 是用户控制的,可能存在命令注入。
+- 修复方法: 使用带显式参数数组的生成进程 (已正确完成)。在构建文件路径前验证所有用户输入。记录安全边界。
 
-**Missing Session Timeout:**
-- Issue: If a client sends `start` but never sends `end`, the session object persists indefinitely in memory.
-- Files: `src/server.js` (lines 54-65)
-- Impact: Memory leak - accumulated orphaned sessions will grow without bound
-- Fix approach: Add timestamp to session and implement periodic cleanup or timeout on `start` message (e.g., 5 minute timeout)
+**whisper.cpp 子进程缺少超时:**
+- 问题: `src/whisper.js` 生成 whisper.cpp 时没有超时。如果进程挂起 (例如,损坏的音频文件、磁盘 I/O 停顿),连接将无限期保持打开,阻塞所有后续请求的队列。
+- 文件: `src/whisper.js:13, 18-24`
+- 影响: 拒绝服务漏洞。一个格式错误的音频文件可以冻结整个服务器。
+- 修复方法: 实现超时 (例如 `config.whisperTimeoutMs`,默认 120 秒)。超时时杀死子进程并拒绝错误。
 
-**No Validation of Audio Parameter Bounds:**
-- Issue: Client-provided `sampleRate`, `channels`, `bitDepth` are used directly without validation against reasonable limits.
-- Files: `src/server.js` (lines 59-61)
-- Impact: Malicious or buggy clients could request invalid audio formats (e.g., 1000000Hz, 100 channels) causing undefined behavior
-- Fix approach: Validate against whitelist of supported values: sampleRate in [8000, 16000, 44100, 48000], channels in [1, 2], bitDepth in [16]
+**WebSocket 消息处理程序中的未捕获异常:**
+- 问题: `src/server.js:153-155` 的通用 try-catch 捕获所有错误但仅记录到客户端。消息解析中的崩溃或无限循环可能被遗漏。
+- 文件: `src/server.js:39-156`
+- 影响: 消息解析错误、会话状态管理中的边缘情况错误可能静默失败或使会话处于损坏状态。
+- 修复方法: 将显式错误日志添加到 stderr/logger。更严格地验证会话状态转换 (使用状态机或严格验证)。
 
-## Security Considerations
+**剪贴板操作无回退:**
+- 问题: `src/inject.js` 使用 macOS 特定的 `pbcopy` 和 `osascript` 命令,无平台检测或回退。
+- 文件: `src/inject.js:3-21`
+- 影响: 如果 `mode` 不是 `return_only`,在非 macOS 系统上运行时服务器崩溃。需要辅助功能权限但在启动时未验证。
+- 修复方法: 启动时检测平台,如果非 macOS 则快速失败。在首次使用前使用 `tccutil` 检查辅助功能权限。添加模式验证。
 
-**Auth Token Hardcoded in Examples:**
-- Risk: `.env.example` shows `AUTH_TOKEN=change_me`. Users may copy this file directly to `.env` without changing the token.
-- Files: `.env.example` (line 3)
-- Current mitigation: README mentions "edit paths" but doesn't explicitly warn about token
-- Recommendations: Add prominent warning in README about AUTH_TOKEN security. Consider failing startup if AUTH_TOKEN is still default value.
+**无大小限制的音频缓冲区连接:**
+- 问题: `src/server.js` 在 `session.parts` 数组中收集 PCM 块并一次性连接所有。无流式或分块处理。
+- 文件: `src/server.js:64, 77, 144`
+- 影响: 非常大的音频文件 (例如,数小时录音) 可能导致内存耗尽和 OOM 崩溃。`maxAudioSec` 限制有帮助但未在客户端级别强制执行。
+- 修复方法: 在接受块之前验证音频大小。添加每块大小限制。考虑流式传输到磁盘而不是在内存中缓冲所有内容。
 
-**Process Injection via osascript:**
-- Risk: `injectText()` uses osascript to simulate keyboard input without validating the recognized text. If ASR result contains unexpected characters or is extremely long, unexpected behavior could occur.
-- Files: `src/inject.js` (lines 13-34)
-- Current mitigation: Max audio duration limits transcript length indirectly, but no direct validation of text content
-- Recommendations: Add max length validation on `text` parameter before pbcopy/osascript. Sanitize special characters that could break AppleScript strings (quotes, newlines).
+## 已知错误
 
-**Command Injection Risk in whisper.cpp Args:**
-- Risk: `WHISPER_ARGS` environment variable is split on whitespace and passed directly to `spawn()`. While `spawn()` is safer than shell execution, user-provided args could still cause issues.
-- Files: `src/config.js` (lines 10-12), `src/whisper.js` (line 10)
-- Current mitigation: Using `spawn()` instead of shell execution mitigates most injection risks
-- Recommendations: Validate WHISPER_ARGS against allowed flags whitelist (e.g., --language, --temperature only). Consider JSON config instead of string parsing.
+**并发关闭后的会话空引用:**
+- 症状: 如果客户端在 whisper 处理进行时关闭连接,可能在已关闭的连接上调用 `ws.send()`,抛出错误。
+- 文件: `src/server.js:119-121`
+- 触发器: 发送音频,在处理 `end` 消息之前或 whisper 完成之前立即关闭连接。
+- 解决方法: 发送前检查 `ws.readyState`,或使用 try-catch 保护 `ws.send()` (已在第 154 行完成)。
+- 状态: 通过通用 catch 块部分缓解,但错误被记录到可能已关闭的连接。
 
-**macOS Accessibility Permissions Spoof:**
-- Risk: No validation that osascript can actually access target app. Silent failures could occur if app doesn't have Accessibility permission.
-- Files: `src/inject.js` (lines 13-20)
-- Current mitigation: Error is returned to client if osascript fails
-- Recommendations: Test pbcopy and osascript availability at startup; document macOS security requirements clearly.
+**在没有会话的情况下发送的进度消息:**
+- 症状: 如果在块接收和进度检查之间 `session` 变为 null,第 149 行的进度消息计算可能失败。
+- 文件: `src/server.js:149-151`
+- 触发器: 不太可能的竞争条件 - 第 138 行的会话 null 检查应该防止这种情况。需要验证原子性。
+- 解决方法: 如果会话状态管理正确,则无需解决。
+- 状态: 低优先级,但值得在进度计算前添加显式 null 检查。
 
-## Known Bugs
+## 安全考虑
 
-**WebSocket Silent Close on Auth Failure:**
-- Symptoms: Client receives error message but connection closes immediately. No explicit close reason code.
-- Files: `src/server.js` (lines 45-48)
-- Trigger: Send `start` message without token or with wrong token
-- Workaround: Client should expect connection close after auth error and attempt reconnection
+**通过 WebSocket 以明文发送的身份验证令牌:**
+- 风险: 如果连接未加密 TLS,令牌会暴露于网络嗅探。默认情况下 `ws://` 使用未加密的 WebSocket。
+- 文件: `src/server.js:45`
+- 当前缓解: AUTH_TOKEN 仅从 start 消息接受,不从 URL 或标头接受。每个服务器单个令牌 (不是每用户)。
+- 建议: 强制使用 WSS (WebSocket Secure / TLS)。使用每会话令牌或 JWT。对失败的认证尝试实施速率限制。记录认证失败以进行监控。
 
-**Improper Error Message on Binary Before Start:**
-- Symptoms: When binary audio frame arrives before `start`, error is sent with `reqId: null` even if session exists from previous request
-- Files: `src/server.js` (line 135)
-- Trigger: Send binary frame, then `start`, then binary frame - the second binary frame has no session initially
-- Workaround: Ensure `start` is sent before audio chunks in all cases
+**音频参数无输入验证:**
+- 风险: 恶意客户端可能发送 `sampleRate: 999999999` 或负 `channels`,导致 whisper.cpp 中的内存分配失败或缓冲区溢出。
+- 文件: `src/server.js:52-62`
+- 当前缓解: Config 提供默认值,但不验证客户端覆盖。
+- 建议: 针对支持值的白名单验证所有数值参数。在连接开始时拒绝超出范围的值。记录支持的音频格式。
 
-**Unreliable Progress Reporting:**
-- Symptoms: Progress updates use modulo calculation that may miss boundaries or report inconsistently based on chunk alignment
-- Files: `src/server.js` (lines 144-147)
-- Trigger: Send audio chunks in specific sizes that align with 256KB boundaries
-- Workaround: Implement explicit chunk tracking instead of byte count modulo
+**文件系统清理依赖于可选标志:**
+- 风险: 如果 `keepDebug=false` (默认),会删除临时 WAV 和 TXT 文件。如果删除静默失败 (通过 `safeUnlink`),文件会在 `/tmp` 中累积。攻击者可能填满磁盘。
+- 文件: `src/server.js:113-116`, `src/utils.js:8-10`
+- 当前缓解: `safeUnlink` 静默忽略错误。
+- 建议: 记录清理失败。实施定期清理任务。监控磁盘使用情况。在删除前验证文件路径以防止意外删除系统文件。
 
-## Performance Bottlenecks
+**无速率限制或 DOS 保护:**
+- 风险: 攻击者可能发送无限的 WebSocket 连接或巨大的音频负载以耗尽内存/CPU。
+- 文件: `src/server.js:34`
+- 当前缓解: `maxAudioSec` 限制每会话音频时长,但无每连接或每 IP 限制。
+- 建议: 实施连接速率限制、每 IP 并发连接限制以及带反压的全局队列深度限制。
 
-**Serial Whisper Processing:**
-- Problem: `whisperQueue` forces all ASR requests to run sequentially. If one audio file takes 30 seconds, all queued requests wait.
-- Files: `src/server.js` (lines 31-32, 115-117)
-- Cause: Global promise queue prevents concurrent whisper.cpp invocations
-- Improvement path: Implement worker pool or child process pool. Check whisper.cpp documentation for thread safety and use `--threads` flag to allow concurrent runs.
+## 性能瓶颈
 
-**Unbounded Buffer Accumulation:**
-- Problem: `session.parts` array accumulates all audio chunks in memory. 30 second max audio at 16kHz mono = ~960KB, but no limit on chunk count.
-- Files: `src/server.js` (lines 140, 77)
-- Cause: Each chunk is pushed to array without deduplication or streaming to disk
-- Improvement path: Write chunks directly to temporary file instead of buffering. Implement streaming WAV file construction.
+**串行 whisper 处理阻塞所有客户端:**
+- 问题: `whisperQueue` Promise 链强制所有音频文件一次通过 whisper.cpp 一个。如果每个文件需要 2 秒,10 个并发请求需要 20 秒。
+- 文件: `src/server.js:32, 119`
+- 原因: 避免 CPU/磁盘过载的设计选择,但未记录。单线程 Node.js + 阻塞 whisper.cpp 子进程。
+- 改进路径: 分析 whisper.cpp 以找到最佳并发性 (例如,2-4 个并行进程)。实施工作线程池或单独的 whisper 服务。如果可用,考虑 GPU 加速。
 
-**Temp File Cleanup on Failure:**
-- Problem: If whisper.cpp fails or process crashes, `.wav` and `.txt` temp files are not cleaned up. With high request volume, disk fills up.
-- Files: `src/server.js` (lines 109-112), `src/whisper.js` (line 26)
-- Cause: Files are only deleted if `KEEP_DEBUG=false` and whisper succeeds. No error cleanup.
-- Improvement path: Use `finally` block or implement OS-level temp file cleanup. Consider tmpdir auto-cleanup utility.
+**JavaScript 中的完整音频缓冲区连接:**
+- 问题: `Buffer.concat()` 将所有块复制到新缓冲区。对于大文件 (30 秒 = 960KB),如果有许多小块,这是 O(n²) 的块数。
+- 文件: `src/server.js:77`
+- 原因: 简单,但对流数据效率低下。
+- 改进路径: 在到达时流式传输 PCM 到临时文件,或使用 `Buffer.allocUnsafe()` 进行单次写入。对来自 ESP32 的典型块大小进行基准测试。
 
-## Fragile Areas
+**无压缩或音频格式协商:**
+- 问题: 客户端发送原始 PCM (16 kHz 的 16 位单声道 = 32KB/秒)。如果通过慢速网络,不提供压缩选项,浪费带宽。
+- 文件: `src/server.js:58`
+- 原因: 简单性和与 ESP32 硬件的兼容性。
+- 改进路径: 如果带宽是瓶颈,添加可选压缩模式 (例如,µ-law、ADPCM)。首先分析实际 ESP32 网络条件。
 
-**WAV Header Construction:**
-- Files: `src/wav.js`
-- Why fragile: Manual byte-level buffer manipulation. Off-by-one errors in offset calculations cause invalid WAV files that whisper.cpp silently ignores or misinterprets.
-- Safe modification: Test with multiple sample rates/channels. Use WAV format validation library instead of manual construction.
-- Test coverage: No unit tests for `pcmToWavBuffer()`. Manually verified with only default case (16kHz mono 16-bit).
+## 脆弱区域
 
-**Session State Management:**
-- Files: `src/server.js` (lines 37, 54-65, 72-75, 119, 124, 155)
-- Why fragile: Single `session` variable shared across message handlers. No validation that `session` exists before access. Can be set to null mid-operation.
-- Safe modification: Use Map or WeakMap indexed by reqId instead of single variable. Add null checks before every access. Consider session ID validation.
-- Test coverage: No tests for multi-request concurrency or rapid connect/disconnect cycles.
+**`src/wav.js` 中的 WAV 格式编码:**
+- 文件: `src/wav.js`
+- 为什么脆弱: 带硬编码偏移量的手动 WAV 头构建。字节顺序、块大小或字段放置中的任何错误都会产生静音的 WAV 文件,播放时产生垃圾或无法解码。
+- 安全修改: 为 WAV 头验证添加综合单元测试。使用 `ffprobe`、`sox` 或其他工具进行测试。记录使用的 WAV 格式规范引用。为头大小添加断言 (第 10 行必须是 44)。
+- 测试覆盖: 未找到测试。WAV 头仅通过端到端 whisper 处理进行测试。
 
-**Error Context Loss:**
-- Files: `src/server.js` (lines 149-151), `src/whisper.js` (lines 18-23)
-- Why fragile: Error messages converted to strings without stack traces. Makes debugging difficult when errors propagate through promise chain.
-- Safe modification: Log full error objects server-side, send sanitized messages to client. Implement structured logging with request IDs.
-- Test coverage: No tests for error propagation or recovery scenarios.
+**`src/server.js` 中的会话状态机:**
+- 文件: `src/server.js:37-156`
+- 为什么脆弱: 会话是没有正式状态机的可变对象。有效转换: null → { start } → { chunks } → null。未强制执行无效转换 (例如,没有 `end` 的两个 `start` 消息)。
+- 安全修改: 定义显式状态 (IDLE、RECORDING、PROCESSING、ERROR)。在每个消息处理程序之前添加状态验证。使用 TypeScript 或显式枚举。
+- 测试覆盖: test-client.js 中存在基本测试,但无边缘情况覆盖 (例如,双 start、start 前的块、没有 start 的 end)。
 
-## Scaling Limits
+**Whisper.cpp 子进程错误处理:**
+- 文件: `src/whisper.js`
+- 为什么脆弱: 假设 whisper.cpp 将错误输出到 stderr 并以非零代码退出。不同的 whisper 版本或配置可能表现不同。Stderr 解析很脆弱。
+- 安全修改: 启动时验证 whisper.cpp 版本。使用正则表达式解析 stderr 并验证预期的错误消息。在读取前检查输出文件是否存在且有效。
+- 测试覆盖: whisper 子进程无测试。未涵盖错误场景 (例如,缺少模型文件、损坏的 WAV)。
 
-**Single-Process CPU Bottleneck:**
-- Current capacity: Can handle 1 sequential ASR request at a time
-- Limit: If whisper.cpp takes 10 seconds per request and arrives every 1 second, 9+ requests queue up
-- Scaling path: Implement worker process pool using Node.js `worker_threads` or `cluster` module. Distribute whisper.cpp work across CPU cores.
+**`src/inject.js` 中的平台特定注入:**
+- 文件: `src/inject.js`
+- 为什么脆弱: 硬编码的 macOS 特定命令 (`pbcopy`、`osascript`)。在非 macOS 系统上静默失败或抛出神秘错误。
+- 安全修改: 在模块加载或服务器启动时检查平台。如果非 macOS 且模式 !== 'return_only',抛出显式错误。记录 macOS 辅助功能要求。
+- 测试覆盖: 无测试。只能在具有辅助功能权限的 macOS 上测试。
 
-**Memory Usage Unbounded on Long Sessions:**
-- Current capacity: Per-session buffer limited by `maxAudioSec` (default 30s = ~960KB)
-- Limit: 100+ concurrent clients with stalled sessions = 100MB+ RAM
-- Scaling path: Implement session TTL and explicit cleanup. Monitor memory usage per session. Add circuit breaker for rejected new sessions if memory pressure high.
+## 扩展限制
 
-**Disk I/O on Temp Files:**
-- Current capacity: 1 WAV file written per request (default 30s audio = ~960KB)
-- Limit: 10 requests/second × 960KB = 9.6MB/s disk I/O
-- Scaling path: Use ramdisk for temp files. Implement streaming directly to whisper.cpp stdin if whisper supports pipe input.
+**音频时长限制:**
+- 当前容量: `maxAudioSec=30` (默认)。单个服务器每分钟处理约 2-3 个请求 (每个请求 1.5 秒处理)。
+- 限制: 在 10 个并发客户端且音频为最大值时,缓冲区的内存使用接近约 300MB。CPU 是瓶颈 (whisper.cpp)。
+- 扩展路径: 水平: 部署多个服务器,负载均衡 WebSocket 连接。垂直: 使用 GPU 加速的 whisper.cpp,增加工作池并发性。
 
-## Missing Critical Features
+**文件系统临时目录:**
+- 当前容量: `/tmp` 目录用于临时 WAV/TXT 文件。macOS 上的 `/tmp` 通常有几 GB 可用。
+- 限制: 如果 `keepDebug=true` 或清理失败,文件会累积。每个请求约 44KB + 压缩输出。1000 个请求 = 约 44MB。
+- 扩展路径: 实施定期清理 cron 作业。监控 `/tmp` 磁盘使用情况。考虑具有更高配额的替代临时位置。
 
-**No Request Timeout:**
-- Problem: Client can start transcription and abandon request. `whisperQueue` still processes it.
-- Blocks: Impossible to cancel stuck requests without restarting server
+**每个服务器的 WebSocket 连接:**
+- 当前容量: 在现代硬件上,Node.js 可以处理约 10k 个并发 WebSocket 连接。
+- 限制: 每个连接保存一个会话对象 (约 1KB) 和可能的音频缓冲区 (约 960KB)。实际限制取决于可用 RAM 和 whisper 处理队列深度。
+- 扩展路径: 使用负载均衡器 (例如 nginx、HAProxy) 进行水平扩展。实施连接池或速率限制以防止资源耗尽。
 
-**No Graceful Shutdown:**
-- Problem: If server crashes while whisper.cpp is running, temp files leak
-- Blocks: Long-running production deployments accumulate orphaned files
+## 有风险的依赖
 
-**No Request Rate Limiting:**
-- Problem: Client can spam `start` messages, filling queue
-- Blocks: DoS vulnerability from single malicious client
+**`ws` 包 (WebSocket):**
+- 风险: 未知关键漏洞,但应监控包更新。WebSocket 协议成熟但可能发布安全更新。
+- 影响: 主要版本中的重大更改需要代码更改。当前版本: `^8.17.1`。
+- 迁移计划: 保持依赖最新。在生产中固定到特定版本。更新前查看更新日志。
 
-**No Health Check for whisper.cpp Binary:**
-- Problem: Server starts successfully even if `WHISPER_BIN` or `WHISPER_MODEL` are invalid
-- Blocks: Errors only discovered when first request arrives
+**对 `whisper.cpp` 的平台依赖:**
+- 风险: whisper.cpp 是外部 C++ 二进制文件。如果构建系统更改或依赖被移除,二进制文件可能变得不可用。
+- 影响: 没有可工作的 whisper.cpp 二进制文件,服务器无法运行。需要 macOS + 自定义构建。
+- 迁移计划: 在 README 中记录确切的构建步骤。考虑容器化 whisper.cpp 构建。如果需要,提供基于云的 API 回退。
 
-## Test Coverage Gaps
+**Node.js 版本要求:**
+- 风险: README 指定 Node.js 20+。较旧的系统可能没有兼容版本。
+- 影响: 在较旧的 Node.js 版本上服务器无法启动。
+- 迁移计划: 使用 `nvm` 或 `asdf` 管理 Node.js 版本。清楚记录版本要求。如果需要,考虑支持 Node.js 18+。
 
-**No Unit Tests:**
-- What's not tested: WAV file generation (`pcmToWavBuffer`), audio parameter validation, config parsing
-- Files: All src files
-- Risk: Silent corruption of WAV files, invalid configurations not caught
-- Priority: High
+## 缺少的关键功能
 
-**No Integration Tests:**
-- What's not tested: Full request lifecycle (start → audio chunks → end), concurrent requests, timeout scenarios, error recovery
-- Files: `src/server.js`
-- Risk: Race conditions, session state corruption undetected
-- Priority: High
+**无优雅关闭:**
+- 问题: 如果服务器接收 SIGTERM,活动的 whisper 处理和 WebSocket 连接被突然终止。客户端不会收到完成状态。
+- 阻塞: 零停机时间重启的适当部署,容器化环境中的干净关闭。
+- 建议: 实施信号处理程序 (SIGTERM、SIGINT)。等待正在进行的 whisper 队列排空 (带超时)。使用关闭代码 1001 (离开) 优雅地关闭 WebSocket 连接。
 
-**No E2E Tests:**
-- What's not tested: Actual whisper.cpp invocation, clipboard injection, osascript interaction
-- Files: `src/whisper.js`, `src/inject.js`
-- Risk: Incompatibilities with new macOS versions, whisper.cpp versions not caught
-- Priority: Medium
+**启动时无 whisper.cpp 健康检查:**
+- 问题: 即使 whisper 二进制文件或模型文件缺失,服务器也能成功启动。错误仅在第一个音频请求时出现。
+- 阻塞: 自动化部署、健康监控、快速故障检测。
+- 建议: 添加启动验证: 使用虚拟 WAV 文件测试 whisper.cpp,验证模型文件可读,检查版本兼容性。
 
-**No Stress Tests:**
-- What's not tested: Behavior under high concurrency, sustained load, large audio files near limit
-- Files: `src/server.js`
-- Risk: Memory leaks, deadlocks, performance degradation discovered only in production
-- Priority: Medium
+**无指标或可观察性:**
+- 问题: 没有内置的请求速率、错误率、处理时间、队列深度或资源使用的日志记录。
+- 阻塞: 生产监控、调试性能问题、失败警报。
+- 建议: 发出指标 (例如,使用 `statsd` 或 Prometheus 格式)。添加带时间戳和请求 ID 的结构化日志记录。公开 `/metrics` 端点。
+
+**无请求超时或反压处理:**
+- 问题: Whisper 处理可能无限期挂起。如果 whisper 缓慢,WebSocket 积压可能无限增长。
+- 阻塞: 可预测的响应时间、防止资源耗尽。
+- 建议: 添加每个请求的超时配置。实施反压: 如果队列深度超过阈值则拒绝新请求,或增加并发性。
+
+## 测试覆盖缺口
+
+**未测试: WAV 头格式验证:**
+- 未测试的内容: `pcmToWavBuffer()` 输出从未针对 WAV 规范验证。没有测试输出可以被音频工具解码。
+- 文件: `src/wav.js`
+- 风险: WAV 头的静默损坏在 whisper.cpp 无法解码之前不会被注意到 (它可能优雅地处理)。可能产生垃圾文本结果。
+- 优先级: 高 - WAV 格式是关键路径。
+
+**未测试: Whisper.cpp 子进程错误场景:**
+- 未测试的内容: 缺少模型文件、损坏的 WAV 输入、whisper.cpp 崩溃、超时行为。
+- 文件: `src/whisper.js`
+- 风险: 服务器在生产错误时崩溃或挂起。错误消息可能令人困惑或不正确。
+- 优先级: 高 - 子进程错误在生产中很常见。
+
+**未测试: 会话状态机边缘情况:**
+- 未测试的内容: 没有 `end` 的双 `start`、没有 `start` 的 `end`、`start` 前的块、没有会话的 `cancel`、whisper 处理期间的连接关闭。
+- 文件: `src/server.js`
+- 风险: 未定义的行为、内存泄漏、状态损坏。
+- 优先级: 高 - 会话状态对协议至关重要。
+
+**未测试: 平台特定注入代码:**
+- 未测试的内容: `pbcopy()` 失败、由于辅助功能权限 `osascript()` 拒绝、`keystroke` 在某些应用中不工作。
+- 文件: `src/inject.js`
+- 风险: 粘贴模式中的静默失败,客户端不知道注入失败。
+- 优先级: 中 - 仅在 `mode` !== 'return_only' 时使用,这是可选的。
+
+**未测试: 大音频文件的内存使用:**
+- 未测试的内容: 处理 30 秒音频文件 (最大值) 时会发生什么。缓冲区连接性能。垃圾收集行为。
+- 文件: `src/server.js:77, 144`
+- 风险: 在生产规模之前未检测到 OOM 崩溃。
+- 优先级: 中 - 默认 `maxAudioSec=30` 应在该限制下测试。
+
+**未测试: 多个并发 WebSocket 连接:**
+- 未测试的内容: 10+ 个并发客户端同时发送音频时的负载行为。
+- 文件: `src/server.js:34-163`
+- 风险: 负载下的队列延迟、内存使用和故障模式未知。
+- 优先级: 中 - 在生产前应分析单线程瓶颈。
 
 ---
 
-*Concerns audit: 2026-02-02*
+*问题审计: 2026-02-02*
