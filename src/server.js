@@ -93,6 +93,10 @@ wss.on('connection', (ws, req) => {
           const wavPath = base + '.wav';
           await fs.writeFile(wavPath, wavBuf);
 
+          // Save values before clearing session
+          const savedReqId = session.reqId;
+          const savedMode = session.mode;
+
           const run = async () => {
             const t0 = Date.now();
             const { text, ms, outTxt } = await runWhisper({
@@ -102,9 +106,9 @@ wss.on('connection', (ws, req) => {
               extraArgs: config.whisperArgs
             });
 
-            await injectText(text, session.mode);
+            await injectText(text, savedMode);
 
-            ws.send(JSON.stringify({ type: 'result', reqId: session.reqId, text, ms, engine: 'whisper.cpp' }));
+            ws.send(JSON.stringify({ type: 'result', reqId: savedReqId, text, ms, engine: 'whisper.cpp' }));
 
             if (!config.keepDebug) {
               await safeUnlink(wavPath);
@@ -113,7 +117,7 @@ wss.on('connection', (ws, req) => {
           };
 
           whisperQueue = whisperQueue.then(run).catch((err) => {
-            ws.send(JSON.stringify({ type: 'error', reqId: session.reqId, message: String(err?.message ?? err) }));
+            ws.send(JSON.stringify({ type: 'error', reqId: savedReqId, message: String(err?.message ?? err) }));
           });
 
           session = null;
