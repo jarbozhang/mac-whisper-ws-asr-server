@@ -16,14 +16,101 @@ if (!config.authToken) {
   console.error('AUTH_TOKEN is required');
 }
 
-const server = http.createServer(async (req, res) => {
-  if (req.method === 'GET' && req.url === '/health') {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, engine: 'whisper.cpp', uptimeSec: Math.floor(process.uptime()), version: '0.1.0' }));
-    return;
+const clients = new Set();
+
+async function readJsonBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const raw = Buffer.concat(chunks).toString('utf8');
+  if (!raw.trim()) return null;
+  return JSON.parse(raw);
+}
+
+function pickHookPayload(input) {
+  if (!input || typeof input !== 'object') return null;
+
+  // Always include these common fields (per Claude Code hooks docs)
+  const out = {
+    hook_event_name: input.hook_event_name,
+    session_id: input.session_id,
+    cwd: input.cwd,
+    permission_mode: input.permission_mode,
+
+    // Tool-related (common)
+    tool_name: input.tool_name,
+    tool_input: input.tool_input,
+    tool_use_id: input.tool_use_id,
+
+    // Other useful fields (event-specific)
+    prompt: input.prompt,
+    source: input.source,
+    model: input.model,
+    reason: input.reason,
+    stop_hook_active: input.stop_hook_active,
+
+    notification_type: input.notification_type,
+    title: input.title,
+    message: input.message,
+
+    error: input.error,
+    is_interrupt: input.is_interrupt
+  };
+
+  // Remove undefined keys to keep the payload small.
+  for (const k of Object.keys(out)) {
+    if (out[k] === undefined) delete out[k];
   }
-  res.writeHead(404);
-  res.end('Not found');
+  return out;
+}
+
+function broadcast(obj) {
+  const msg = JSON.stringify(obj);
+  for (const ws of clients) {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(msg);
+    }
+  }
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    if (req.method === 'GET' && req.url === '/health') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, engine: 'whisper.cpp', uptimeSec: Math.floor(process.uptime()), version: '0.1.0', mdnsHostname: config.mdnsHostname || null }));
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/hook') {
+      // Simple auth: require x-auth-token to match AUTH_TOKEN
+      const token = String(req.headers['x-auth-token'] ?? '');
+      if (!token || token !== config.authToken) {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+        return;
+      }
+
+      const input = await readJsonBody(req);
+      const payload = pickHookPayload(input);
+      const evt = {
+        type: 'hook',
+        id: uuidv4(),
+        ts: Date.now(),
+        ...payload
+      };
+
+      broadcast(evt);
+
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    res.writeHead(404);
+    res.end('Not found');
+  } catch (e) {
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: String(e?.message ?? e) }));
+  }
 });
 
 const wss = new WebSocketServer({ server, path: '/ws' });
@@ -33,6 +120,8 @@ let whisperQueue = Promise.resolve();
 
 wss.on('connection', (ws, req) => {
   const remote = req.socket.remoteAddress;
+
+  clients.add(ws);
 
   let session = null;
 
@@ -157,6 +246,7 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     session = null;
+    clients.delete(ws);
   });
 
   console.log('WS connected:', remote);

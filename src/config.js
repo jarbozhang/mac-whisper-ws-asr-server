@@ -4,6 +4,7 @@ export const config = {
   host: process.env.HOST ?? '0.0.0.0',
   port: Number(process.env.PORT ?? '8765'),
   authToken: process.env.AUTH_TOKEN ?? '',
+  mdnsHostname: process.env.MDNS_HOSTNAME ?? '',
 
   whisperBin: process.env.WHISPER_BIN ?? '',
   whisperModel: process.env.WHISPER_MODEL ?? '',
