@@ -53,20 +53,20 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CMD-01 | Phase 1 | Pending |
-| CMD-02 | Phase 1 | Pending |
-| KEY-01 | Phase 1 | Pending |
-| KEY-02 | Phase 1 | Pending |
-| KEY-03 | Phase 1 | Pending |
-| KEY-04 | Phase 1 | Pending |
-| RSP-01 | Phase 1 | Pending |
-| RSP-02 | Phase 1 | Pending |
+| CMD-01 | Phase 1 — 命令路由 | Pending |
+| CMD-02 | Phase 1 — 命令路由 | Pending |
+| KEY-01 | Phase 2 — 键盘动作 | Pending |
+| KEY-02 | Phase 2 — 键盘动作 | Pending |
+| KEY-03 | Phase 2 — 键盘动作 | Pending |
+| KEY-04 | Phase 2 — 键盘动作 | Pending |
+| RSP-01 | Phase 3 — 响应协议 | Pending |
+| RSP-02 | Phase 3 — 响应协议 | Pending |
 
 **Coverage:**
 - v1 requirements: 8 total
 - Mapped to phases: 8
-- Unmapped: 0 ✓
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-03*
-*Last updated: 2026-02-03 after initial definition*
+*Last updated: 2026-02-03 — traceability updated after roadmap creation*
