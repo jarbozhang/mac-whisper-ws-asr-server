@@ -19,6 +19,17 @@ const VALID_COMMAND_ACTIONS = new Set([
   'toggle_auto_approve'
 ]);
 
+// Logging utility
+function log(level, category, message, data = null) {
+  const ts = new Date().toISOString();
+  const prefix = `[${ts}] [${level.toUpperCase()}] [${category}]`;
+  if (data) {
+    console.log(`${prefix} ${message}`, JSON.stringify(data));
+  } else {
+    console.log(`${prefix} ${message}`);
+  }
+}
+
 if (!config.authToken) {
   console.error('AUTH_TOKEN is required');
 }
@@ -82,12 +93,14 @@ function broadcast(obj) {
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url === '/health') {
+      log('info', 'HTTP', `${req.method} ${req.url} from ${req.socket.remoteAddress}`);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true, engine: 'whisper.cpp', uptimeSec: Math.floor(process.uptime()), version: '0.1.0', mdnsHostname: config.mdnsHostname || null }));
       return;
     }
 
     if (req.method === 'POST' && req.url === '/hook') {
+      log('info', 'HTTP', `${req.method} ${req.url} from ${req.socket.remoteAddress}`);
       // Simple auth: require x-auth-token to match AUTH_TOKEN
       const token = String(req.headers['x-auth-token'] ?? '');
       if (!token || token !== config.authToken) {
@@ -97,6 +110,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const input = await readJsonBody(req);
+      log('debug', 'HTTP', 'Hook payload received', input);
       const payload = pickHookPayload(input);
       const evt = {
         type: 'hook',
@@ -106,6 +120,7 @@ const server = http.createServer(async (req, res) => {
       };
 
       broadcast(evt);
+      log('info', 'HTTP', `Hook broadcast to ${clients.size} client(s)`, { hook_event_name: payload?.hook_event_name });
 
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
@@ -127,8 +142,10 @@ let whisperQueue = Promise.resolve();
 
 wss.on('connection', (ws, req) => {
   const remote = req.socket.remoteAddress;
+  const clientId = uuidv4().slice(0, 8);
 
   clients.add(ws);
+  log('info', 'WS', `Client connected: ${clientId}`, { remote, totalClients: clients.size });
 
   let session = null;
 
@@ -136,6 +153,7 @@ wss.on('connection', (ws, req) => {
     try {
       if (!isBinary) {
         const msg = JSON.parse(data.toString('utf8'));
+        log('debug', 'WS', `Message from ${clientId}`, { type: msg.type, reqId: msg.reqId, action: msg.action });
 
         if (msg.type === 'start') {
           if (!msg.token || msg.token !== config.authToken) {
@@ -160,6 +178,7 @@ wss.on('connection', (ws, req) => {
             parts: []
           };
 
+          log('info', 'WS', `Session started: ${clientId}`, { reqId, mode, sampleRate: session.sampleRate });
           ws.send(JSON.stringify({ type: 'ack', reqId, status: 'ready' }));
           return;
         }
@@ -173,6 +192,7 @@ wss.on('connection', (ws, req) => {
           const pcm = Buffer.concat(session.parts);
           const bytesPerSec = session.sampleRate * (session.bitDepth / 8) * session.channels;
           const durSec = pcm.length / bytesPerSec;
+          log('info', 'WS', `Session ended: ${clientId}`, { reqId: session.reqId, chunks: session.chunks, bytes: session.bytes, durationSec: durSec.toFixed(2) });
           if (durSec > config.maxAudioSec) {
             ws.send(JSON.stringify({ type: 'error', reqId: session.reqId, message: `audio too long: ${durSec.toFixed(2)}s` }));
             session = null;
@@ -195,6 +215,7 @@ wss.on('connection', (ws, req) => {
 
           const run = async () => {
             const t0 = Date.now();
+            log('info', 'WHISPER', `Processing started: ${savedReqId}`);
             const { text, ms, outTxt } = await runWhisper({
               whisperBin: config.whisperBin,
               modelPath: config.whisperModel,
@@ -202,7 +223,9 @@ wss.on('connection', (ws, req) => {
               extraArgs: config.whisperArgs
             });
 
+            log('info', 'WHISPER', `Processing complete: ${savedReqId}`, { ms, textLength: text.length, text: text.slice(0, 100) });
             await injectText(text, savedMode);
+            log('info', 'INJECT', `Text injected: ${savedReqId}`, { mode: savedMode });
 
             ws.send(JSON.stringify({ type: 'result', reqId: savedReqId, text, ms, engine: 'whisper.cpp' }));
 
@@ -252,7 +275,7 @@ wss.on('connection', (ws, req) => {
           // 执行键盘命令
           try {
             await pressCommandKey(action);
-            console.log(`Command executed: ${action}`);
+            log('info', 'COMMAND', `Executed: ${action}`, { clientId, reqId: reqId ?? null });
 
             ws.send(JSON.stringify({
               type: 'command_ack',
@@ -261,7 +284,7 @@ wss.on('connection', (ws, req) => {
               success: true
             }));
           } catch (err) {
-            console.error(`Command failed: ${action}`, err);
+            log('error', 'COMMAND', `Failed: ${action}`, { clientId, error: err.message });
 
             ws.send(JSON.stringify({
               type: 'command_ack',
@@ -299,14 +322,17 @@ wss.on('connection', (ws, req) => {
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
     session = null;
     clients.delete(ws);
+    log('info', 'WS', `Client disconnected: ${clientId}`, { code, reason: reason?.toString() || '', totalClients: clients.size });
   });
 
-  console.log('WS connected:', remote);
+  ws.on('error', (err) => {
+    log('error', 'WS', `Client error: ${clientId}`, { error: err.message });
+  });
 });
 
 server.listen(config.port, config.host, () => {
-  console.log(`HTTP+WS listening on http://${config.host}:${config.port} (ws path /ws)`);
+  log('info', 'SERVER', `Started on http://${config.host}:${config.port}`, { wsPath: '/ws', defaultMode: config.defaultMode });
 });
