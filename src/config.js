@@ -13,6 +13,7 @@ export const config = {
     : [],
 
   defaultMode: process.env.DEFAULT_MODE ?? 'paste',
+  partialIntervalMs: Number(process.env.PARTIAL_INTERVAL_MS ?? '3000'),
   maxAudioSec: Number(process.env.MAX_AUDIO_SEC ?? '30'),
   sampleRate: Number(process.env.SAMPLE_RATE ?? '16000'),
   channels: Number(process.env.CHANNELS ?? '1'),

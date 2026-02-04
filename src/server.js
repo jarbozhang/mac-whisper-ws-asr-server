@@ -140,6 +140,72 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 // Simple global mutex to run whisper serially
 let whisperQueue = Promise.resolve();
 
+// Partial recognition helper
+async function runPartialRecognition(session, ws, clientId) {
+  if (!session || session.parts.length === 0) return;
+  if (session.isPartialProcessing) return; // Skip if already processing
+
+  const currentBytes = session.bytes;
+  if (currentBytes === session.lastPartialBytes) return; // No new data
+
+  session.isPartialProcessing = true;
+  session.lastPartialBytes = currentBytes;
+
+  try {
+    const pcm = Buffer.concat(session.parts);
+    const bytesPerSec = session.sampleRate * (session.bitDepth / 8) * session.channels;
+    const durSec = pcm.length / bytesPerSec;
+
+    // Skip if too short (< 0.5s)
+    if (durSec < 0.5) {
+      session.isPartialProcessing = false;
+      return;
+    }
+
+    const wavBuf = pcmToWavBuffer(pcm, {
+      sampleRate: session.sampleRate,
+      channels: session.channels,
+      bitDepth: session.bitDepth
+    });
+
+    const partialWavPath = path.join(os.tmpdir(), `asr-partial-${session.reqId}-${Date.now()}.wav`);
+    await fs.writeFile(partialWavPath, wavBuf);
+
+    log('info', 'WHISPER', `Partial processing started: ${session.reqId}`, { durationSec: durSec.toFixed(2) });
+
+    const { text, ms, outTxt } = await runWhisper({
+      whisperBin: config.whisperBin,
+      modelPath: config.whisperModel,
+      wavPath: partialWavPath,
+      extraArgs: config.whisperArgs
+    });
+
+    log('info', 'WHISPER', `Partial processing complete: ${session.reqId}`, { ms, textLength: text.length });
+
+    // Only send if session still active and ws still open
+    if (session && ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'partial',
+        reqId: session.reqId,
+        text,
+        ms,
+        durationSec: durSec.toFixed(2)
+      }));
+    }
+
+    // Cleanup partial wav file
+    await safeUnlink(partialWavPath);
+    await safeUnlink(outTxt);
+
+  } catch (err) {
+    log('error', 'WHISPER', `Partial processing failed: ${session?.reqId}`, { error: err.message });
+  } finally {
+    if (session) {
+      session.isPartialProcessing = false;
+    }
+  }
+}
+
 wss.on('connection', (ws, req) => {
   const remote = req.socket.remoteAddress;
   const clientId = uuidv4().slice(0, 8);
@@ -175,10 +241,21 @@ wss.on('connection', (ws, req) => {
             bitDepth: msg.bitDepth || config.bitDepth,
             chunks: 0,
             bytes: 0,
-            parts: []
+            parts: [],
+            // Partial recognition state
+            partialTimer: null,
+            lastPartialBytes: 0,
+            isPartialProcessing: false
           };
 
-          log('info', 'WS', `Session started: ${clientId}`, { reqId, mode, sampleRate: session.sampleRate });
+          // Start partial recognition timer
+          if (config.partialIntervalMs > 0) {
+            session.partialTimer = setInterval(() => {
+              runPartialRecognition(session, ws, clientId);
+            }, config.partialIntervalMs);
+          }
+
+          log('info', 'WS', `Session started: ${clientId}`, { reqId, mode, sampleRate: session.sampleRate, partialInterval: config.partialIntervalMs });
           ws.send(JSON.stringify({ type: 'ack', reqId, status: 'ready' }));
           return;
         }
@@ -187,6 +264,12 @@ wss.on('connection', (ws, req) => {
           if (!session || msg.reqId !== session.reqId) {
             ws.send(JSON.stringify({ type: 'error', reqId: msg.reqId ?? null, message: 'no active session' }));
             return;
+          }
+
+          // Clear partial recognition timer
+          if (session.partialTimer) {
+            clearInterval(session.partialTimer);
+            session.partialTimer = null;
           }
 
           const pcm = Buffer.concat(session.parts);
@@ -244,6 +327,9 @@ wss.on('connection', (ws, req) => {
         }
 
         if (msg.type === 'cancel') {
+          if (session?.partialTimer) {
+            clearInterval(session.partialTimer);
+          }
           session = null;
           ws.send(JSON.stringify({ type: 'ack', reqId: msg.reqId ?? null, status: 'cancelled' }));
           return;
@@ -323,6 +409,9 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', (code, reason) => {
+    if (session?.partialTimer) {
+      clearInterval(session.partialTimer);
+    }
     session = null;
     clients.delete(ws);
     log('info', 'WS', `Client disconnected: ${clientId}`, { code, reason: reason?.toString() || '', totalClients: clients.size });
