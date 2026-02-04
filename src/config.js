@@ -11,6 +11,8 @@ export const config = {
   whisperArgs: (process.env.WHISPER_ARGS ?? '').trim().length
     ? (process.env.WHISPER_ARGS ?? '').trim().split(/\s+/)
     : [],
+  // HTTP server mode (preferred over CLI if set)
+  whisperServerUrl: process.env.WHISPER_SERVER_URL ?? '',
 
   defaultMode: process.env.DEFAULT_MODE ?? 'paste',
   partialIntervalMs: Number(process.env.PARTIAL_INTERVAL_MS ?? '3000'),

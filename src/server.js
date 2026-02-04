@@ -177,7 +177,8 @@ async function runPartialRecognition(session, ws, clientId) {
       whisperBin: config.whisperBin,
       modelPath: config.whisperModel,
       wavPath: partialWavPath,
-      extraArgs: config.whisperArgs
+      extraArgs: config.whisperArgs,
+      serverUrl: config.whisperServerUrl
     });
 
     log('info', 'WHISPER', `Partial processing complete: ${session.reqId}`, { ms, textLength: text.length });
@@ -195,7 +196,7 @@ async function runPartialRecognition(session, ws, clientId) {
 
     // Cleanup partial wav file
     await safeUnlink(partialWavPath);
-    await safeUnlink(outTxt);
+    if (outTxt) await safeUnlink(outTxt);
 
   } catch (err) {
     log('error', 'WHISPER', `Partial processing failed: ${session?.reqId}`, { error: err.message });
@@ -303,7 +304,8 @@ wss.on('connection', (ws, req) => {
               whisperBin: config.whisperBin,
               modelPath: config.whisperModel,
               wavPath,
-              extraArgs: config.whisperArgs
+              extraArgs: config.whisperArgs,
+              serverUrl: config.whisperServerUrl
             });
 
             log('info', 'WHISPER', `Processing complete: ${savedReqId}`, { ms, textLength: text.length, text: text.slice(0, 100) });
@@ -314,7 +316,7 @@ wss.on('connection', (ws, req) => {
 
             if (!config.keepDebug) {
               await safeUnlink(wavPath);
-              await safeUnlink(outTxt);
+              if (outTxt) await safeUnlink(outTxt);
             }
           };
 
