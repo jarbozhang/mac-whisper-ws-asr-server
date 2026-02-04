@@ -32,3 +32,18 @@ export async function injectText(text, mode) {
     await osascript('tell application "System Events" to key code 36');
   }
 }
+
+const COMMAND_KEYS = {
+  approve: 'key code 36', // Enter
+  reject: 'key code 53', // Escape
+  switch_model: 'keystroke "p" using option down', // Option+P
+  toggle_auto_approve: 'key code 48 using shift down' // Shift+Tab
+};
+
+export async function pressCommandKey(action) {
+  const keyCommand = COMMAND_KEYS[action];
+  if (!keyCommand) {
+    throw new Error(`unknown command action: ${action}`);
+  }
+  await osascript(`tell application "System Events" to ${keyCommand}`);
+}

@@ -9,8 +9,15 @@ import { v4 as uuidv4 } from 'uuid';
 import { config } from './config.js';
 import { pcmToWavBuffer } from './wav.js';
 import { runWhisper } from './whisper.js';
-import { injectText } from './inject.js';
+import { injectText, pressCommandKey } from './inject.js';
 import { safeUnlink } from './utils.js';
+
+const VALID_COMMAND_ACTIONS = new Set([
+  'approve',
+  'reject',
+  'switch_model',
+  'toggle_auto_approve'
+]);
 
 if (!config.authToken) {
   console.error('AUTH_TOKEN is required');
@@ -216,6 +223,54 @@ wss.on('connection', (ws, req) => {
         if (msg.type === 'cancel') {
           session = null;
           ws.send(JSON.stringify({ type: 'ack', reqId: msg.reqId ?? null, status: 'cancelled' }));
+          return;
+        }
+
+        if (msg.type === 'command') {
+          const { action, reqId } = msg;
+
+          // 验证 action 字段存在
+          if (!action || typeof action !== 'string') {
+            ws.send(JSON.stringify({
+              type: 'error',
+              reqId: reqId ?? null,
+              message: 'command missing action field'
+            }));
+            return;
+          }
+
+          // 验证 action 值是否合法
+          if (!VALID_COMMAND_ACTIONS.has(action)) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              reqId: reqId ?? null,
+              message: `unknown command action: ${action}`
+            }));
+            return;
+          }
+
+          // 执行键盘命令
+          try {
+            await pressCommandKey(action);
+            console.log(`Command executed: ${action}`);
+
+            ws.send(JSON.stringify({
+              type: 'command_ack',
+              reqId: reqId ?? null,
+              action,
+              success: true
+            }));
+          } catch (err) {
+            console.error(`Command failed: ${action}`, err);
+
+            ws.send(JSON.stringify({
+              type: 'command_ack',
+              reqId: reqId ?? null,
+              action,
+              success: false,
+              error: err.message
+            }));
+          }
           return;
         }
 
