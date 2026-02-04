@@ -12,7 +12,7 @@ export const config = {
     ? (process.env.WHISPER_ARGS ?? '').trim().split(/\s+/)
     : [],
 
-  defaultMode: process.env.DEFAULT_MODE ?? 'return_only',
+  defaultMode: process.env.DEFAULT_MODE ?? 'paste',
   maxAudioSec: Number(process.env.MAX_AUDIO_SEC ?? '30'),
   sampleRate: Number(process.env.SAMPLE_RATE ?? '16000'),
   channels: Number(process.env.CHANNELS ?? '1'),
