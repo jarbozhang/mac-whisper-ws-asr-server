@@ -10,9 +10,10 @@
 - Integer phases (1, 2, 3): Planned milestone work
 - Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
 
-- [ ] **Phase 1: 命令路由** - 解析和验证 ESP32 发送的命令消息，未知命令返回错误
-- [ ] **Phase 2: 键盘动作** - 将四种按钮命令映射到对应的 macOS 键盘快捷键并执行
-- [ ] **Phase 3: 响应协议** - 命令执行后向 ESP32 返回确认或错误响应
+- [x] **Phase 1: 命令路由** - 解析和验证 ESP32 发送的命令消息，未知命令返回错误
+- [x] **Phase 2: 键盘动作** - 将四种按钮命令映射到对应的 macOS 键盘快捷键并执行
+- [x] **Phase 3: 响应协议** - 命令执行后向 ESP32 返回确认或错误响应
+- [ ] **Phase 4: 语言输出规范化** - 确保 Whisper 稳定输出简体中文和英语，避免繁体中文
 
 ## Phase Details
 
@@ -56,17 +57,31 @@ Plans:
 Plans:
 - [ ] 03-01: 实现命令执行后的确认和错误响应
 
+### Phase 4: 语言输出规范化
+**Goal**: Whisper 语音识别结果稳定输出简体中文和英语混合内容，不出现繁体中文
+**Depends on**: Nothing (independent feature, affects whisper configuration)
+**Requirements**: [LANG-01]
+**Success Criteria** (what must be TRUE):
+  1. 用户说简体中文时，输出结果为简体中文（不出现繁体字）
+  2. 用户说英语时，输出结果为英语
+  3. 用户中英混合说话时，输出结果为简体中文+英语混合
+**Plans**: 1 plan
+
+Plans:
+- [ ] 04-01-PLAN.md — 添加 Whisper Prompt 工程支持（配置 + CLI/Server 集成 + 验证）
+
 ## Progress
 
 **Execution Order:**
-Phase 1 → Phase 2 → Phase 3
+Phase 1 → Phase 2 → Phase 3 → Phase 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. 命令路由 | 0/TBD | Not started | - |
-| 2. 键盘动作 | 0/TBD | Not started | - |
-| 3. 响应协议 | 0/TBD | Not started | - |
+| 1. 命令路由 | 1/1 | Complete | 2026-02-04 |
+| 2. 键盘动作 | 1/1 | Complete | 2026-02-04 |
+| 3. 响应协议 | 1/1 | Complete | 2026-02-04 |
+| 4. 语言输出规范化 | 0/1 | Planned | - |
 
 ---
 *Roadmap created: 2026-02-03*
-*Last updated: 2026-02-03*
+*Last updated: 2026-02-05*
