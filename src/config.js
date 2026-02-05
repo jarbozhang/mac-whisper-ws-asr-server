@@ -11,11 +11,8 @@ export const config = {
   whisperArgs: (process.env.WHISPER_ARGS ?? '').trim().length
     ? (process.env.WHISPER_ARGS ?? '').trim().split(/\s+/)
     : [],
-  // HTTP server mode (preferred over CLI if set)
-  whisperServerUrl: process.env.WHISPER_SERVER_URL ?? '',
 
   defaultMode: process.env.DEFAULT_MODE ?? 'paste',
-  partialIntervalMs: Number(process.env.PARTIAL_INTERVAL_MS ?? '3000'),
   maxAudioSec: Number(process.env.MAX_AUDIO_SEC ?? '30'),
   sampleRate: Number(process.env.SAMPLE_RATE ?? '16000'),
   channels: Number(process.env.CHANNELS ?? '1'),
