@@ -5,14 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-02-03)
 
 **Core value:** 通过 WebSocket 实现实时语音转文字，让用户可以用语音与 Claude Code 交互，并通过物理按钮快速执行常用操作
-**Current focus:** Phase 3 完成 — 全部功能已实现
+**Current focus:** Phase 4 完成 — 全部功能已实现
 
 ## Current Position
 
-Phase: 3 of 3 (响应协议) ✓ 完成
-Plan: All phases completed
-Status: ✅ All requirements implemented
-Last activity: 2026-02-04 — All phases implemented, structured logging added
+Phase: 4 of 4 (语言输出规范化) ✓ 完成
+Plan: 04-01 完成
+Status: ✅ All phases implemented
+Last activity: 2026-02-05 — Phase 4 executed and verified
 
 Progress: [██████████] 100%
 
@@ -55,6 +55,10 @@ Progress: [██████████] 100%
 *Updated after each plan completion*
 
 ## Accumulated Context
+
+### Roadmap Evolution
+
+- Phase 4 added: 语言输出规范化 — 确保 Whisper 稳定输出简体中文和英语
 
 ### Decisions
 

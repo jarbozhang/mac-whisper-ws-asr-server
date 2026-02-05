@@ -13,7 +13,7 @@
 - [x] **Phase 1: 命令路由** - 解析和验证 ESP32 发送的命令消息，未知命令返回错误
 - [x] **Phase 2: 键盘动作** - 将四种按钮命令映射到对应的 macOS 键盘快捷键并执行
 - [x] **Phase 3: 响应协议** - 命令执行后向 ESP32 返回确认或错误响应
-- [ ] **Phase 4: 语言输出规范化** - 确保 Whisper 稳定输出简体中文和英语，避免繁体中文
+- [x] **Phase 4: 语言输出规范化** - 确保 Whisper 稳定输出简体中文和英语，避免繁体中文
 
 ## Phase Details
 
@@ -68,7 +68,7 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 04-01-PLAN.md — 添加 Whisper Prompt 工程支持（配置 + CLI/Server 集成 + 验证）
+- [x] 04-01-PLAN.md — 添加 Whisper Prompt 工程支持（配置 + CLI/Server 集成 + 验证）
 
 ## Progress
 
@@ -80,7 +80,7 @@ Phase 1 → Phase 2 → Phase 3 → Phase 4
 | 1. 命令路由 | 1/1 | Complete | 2026-02-04 |
 | 2. 键盘动作 | 1/1 | Complete | 2026-02-04 |
 | 3. 响应协议 | 1/1 | Complete | 2026-02-04 |
-| 4. 语言输出规范化 | 0/1 | Planned | - |
+| 4. 语言输出规范化 | 1/1 | Complete | 2026-02-05 |
 
 ---
 *Roadmap created: 2026-02-03*
