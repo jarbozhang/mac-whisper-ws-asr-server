@@ -87,3 +87,6 @@ export async function runWhisper({ whisperBin, modelPath, wavPath, extraArgs = [
   }
   return runWhisperCli({ whisperBin, modelPath, wavPath, extraArgs });
 }
+
+// Export HTTP runner for direct use
+export { runWhisperHttp };

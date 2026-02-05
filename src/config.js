@@ -6,11 +6,19 @@ export const config = {
   authToken: process.env.AUTH_TOKEN ?? '',
   mdnsHostname: process.env.MDNS_HOSTNAME ?? '',
 
+  // Whisper CLI mode
   whisperBin: process.env.WHISPER_BIN ?? '',
   whisperModel: process.env.WHISPER_MODEL ?? '',
   whisperArgs: (process.env.WHISPER_ARGS ?? '').trim().length
     ? (process.env.WHISPER_ARGS ?? '').trim().split(/\s+/)
     : [],
+
+  // Whisper server mode
+  whisperServerBin: process.env.WHISPER_SERVER_BIN ?? '',
+  whisperServerHost: process.env.WHISPER_SERVER_HOST ?? '127.0.0.1',
+  whisperServerPort: Number(process.env.WHISPER_SERVER_PORT ?? '8766'),
+  whisperServerUrl: process.env.WHISPER_SERVER_URL ?? '',
+  whisperAutoStart: String(process.env.WHISPER_AUTO_START ?? 'false').toLowerCase() === 'true',
 
   defaultMode: process.env.DEFAULT_MODE ?? 'paste',
   maxAudioSec: Number(process.env.MAX_AUDIO_SEC ?? '30'),

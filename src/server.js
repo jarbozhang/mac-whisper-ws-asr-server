@@ -11,6 +11,7 @@ import { pcmToWavBuffer } from './wav.js';
 import { runWhisper } from './whisper.js';
 import { injectText, pressCommandKey } from './inject.js';
 import { safeUnlink } from './utils.js';
+import { startWhisperServer, stopWhisperServer, getServerUrl } from './whisper-server-manager.js';
 
 const VALID_COMMAND_ACTIONS = new Set([
   'approve',
@@ -220,7 +221,8 @@ wss.on('connection', (ws, req) => {
               whisperBin: config.whisperBin,
               modelPath: config.whisperModel,
               wavPath,
-              extraArgs: config.whisperArgs
+              extraArgs: config.whisperArgs,
+              serverUrl: getServerUrl()
             });
 
             log('info', 'WHISPER', `Processing complete: ${savedReqId}`, { ms, textLength: text.length, text: text.slice(0, 100) });
@@ -333,6 +335,46 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-server.listen(config.port, config.host, () => {
-  log('info', 'SERVER', `Started on http://${config.host}:${config.port}`, { wsPath: '/ws', defaultMode: config.defaultMode });
+// Graceful shutdown
+function shutdown(signal) {
+  log('info', 'SERVER', `Received ${signal}, shutting down...`);
+  stopWhisperServer();
+  server.close(() => {
+    log('info', 'SERVER', 'HTTP server closed');
+    process.exit(0);
+  });
+  // Force exit after 10 seconds
+  setTimeout(() => {
+    log('warn', 'SERVER', 'Force exit after timeout');
+    process.exit(1);
+  }, 10000);
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// Start server
+async function start() {
+  // Start whisper server if auto-start is enabled
+  if (config.whisperAutoStart) {
+    const started = await startWhisperServer();
+    if (!started) {
+      log('warn', 'SERVER', 'Whisper server failed to start, falling back to CLI mode');
+    }
+  }
+
+  server.listen(config.port, config.host, () => {
+    const serverUrl = getServerUrl();
+    log('info', 'SERVER', `Started on http://${config.host}:${config.port}`, {
+      wsPath: '/ws',
+      defaultMode: config.defaultMode,
+      whisperMode: serverUrl ? 'server' : 'cli',
+      whisperUrl: serverUrl || null
+    });
+  });
+}
+
+start().catch((err) => {
+  log('error', 'SERVER', 'Failed to start', { error: err.message });
+  process.exit(1);
 });
