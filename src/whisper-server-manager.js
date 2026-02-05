@@ -72,9 +72,15 @@ export async function startWhisperServer() {
   const args = [
     '--model', config.whisperModel,
     '--host', config.whisperServerHost,
-    '--port', String(config.whisperServerPort),
-    ...validServerArgs
+    '--port', String(config.whisperServerPort)
   ];
+
+  // Add prompt if configured
+  if (config.whisperPrompt) {
+    args.push('--prompt', config.whisperPrompt);
+  }
+
+  args.push(...validServerArgs);
 
   log('info', 'Starting whisper server', {
     bin: config.whisperServerBin,

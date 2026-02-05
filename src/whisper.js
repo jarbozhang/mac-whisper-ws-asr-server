@@ -1,14 +1,22 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { config } from './config.js';
 
 // CLI mode: spawn whisper-cli process
 async function runWhisperCli({ whisperBin, modelPath, wavPath, extraArgs = [] }) {
   const outBase = wavPath.replace(/\.wav$/i, '');
   const outTxt = outBase + '.txt';
 
-  // Use output-txt to avoid parsing stdout
-  const args = ['-m', modelPath, '-f', wavPath, '--output-txt', '--output-file', outBase, ...extraArgs];
+  // Build args with prompt if configured
+  const args = ['-m', modelPath, '-f', wavPath, '--output-txt', '--output-file', outBase];
+
+  // Add prompt before extraArgs so user can override via WHISPER_ARGS
+  if (config.whisperPrompt) {
+    args.push('--prompt', config.whisperPrompt);
+  }
+
+  args.push(...extraArgs);
 
   const start = Date.now();
   const child = spawn(whisperBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });

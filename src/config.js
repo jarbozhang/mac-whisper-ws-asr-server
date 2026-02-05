@@ -12,6 +12,7 @@ export const config = {
   whisperArgs: (process.env.WHISPER_ARGS ?? '').trim().length
     ? (process.env.WHISPER_ARGS ?? '').trim().split(/\s+/)
     : [],
+  whisperPrompt: process.env.WHISPER_PROMPT ?? '以下是普通话的句子。我在写代码，使用 function 定义函数，通过 API 调用接口。',
 
   // Whisper server mode
   whisperServerBin: process.env.WHISPER_SERVER_BIN ?? '',
