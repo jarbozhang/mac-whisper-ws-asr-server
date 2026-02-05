@@ -52,11 +52,28 @@ export async function startWhisperServer() {
     return true;
   }
 
+  // Filter args that are valid for whisper-server
+  // whisper-server doesn't support: --temperature
+  const invalidFlags = ['--temperature'];
+  const validServerArgs = [];
+  let skipNext = false;
+  for (const arg of config.whisperArgs) {
+    if (skipNext) {
+      skipNext = false;
+      continue;
+    }
+    if (invalidFlags.includes(arg)) {
+      skipNext = true; // Skip this flag and its value
+      continue;
+    }
+    validServerArgs.push(arg);
+  }
+
   const args = [
     '--model', config.whisperModel,
     '--host', config.whisperServerHost,
     '--port', String(config.whisperServerPort),
-    ...config.whisperArgs
+    ...validServerArgs
   ];
 
   log('info', 'Starting whisper server', {
@@ -132,11 +149,17 @@ export function isServerReady() {
 }
 
 export function getServerUrl() {
+  // If auto-start is enabled, only return URL if server is actually ready
+  if (config.whisperAutoStart) {
+    if (serverReady) {
+      return `http://${config.whisperServerHost}:${config.whisperServerPort}`;
+    }
+    // Auto-start enabled but server not ready = fall back to CLI
+    return '';
+  }
+  // If not auto-start, use external server URL if configured
   if (config.whisperServerUrl) {
     return config.whisperServerUrl;
-  }
-  if (config.whisperAutoStart && serverReady) {
-    return `http://${config.whisperServerHost}:${config.whisperServerPort}`;
   }
   return '';
 }
